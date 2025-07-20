@@ -628,6 +628,97 @@
       width: 0%;
     }
 
+    /* Notification Styles */
+    .notification-badge {
+      position: relative;
+    }
+
+    .notification-badge::after {
+      content: attr(data-count);
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      background-color: var(--error);
+      color: white;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: bold;
+    }
+
+    .notification-container {
+      position: fixed;
+      top: 80px;
+      right: 20px;
+      width: 350px;
+      max-height: 500px;
+      overflow-y: auto;
+      background-color: var(--card-bg);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-md);
+      z-index: 1000;
+      display: none;
+    }
+
+    .notification-container.show {
+      display: block;
+    }
+
+    .notification-header {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .notification-item {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+
+    .notification-item:hover {
+      background-color: var(--bg);
+    }
+
+    .notification-item.unread {
+      background-color: rgba(79, 70, 229, 0.1);
+    }
+
+    .notification-item-title {
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .notification-item-time {
+      font-size: 0.75rem;
+      color: var(--text-light);
+    }
+
+    .notification-item-content {
+      font-size: 0.875rem;
+    }
+
+    .notification-item-task {
+      color: var(--primary);
+    }
+
+    .notification-item-goal {
+      color: var(--success);
+    }
+
+    .notification-item-warning {
+      color: var(--warning);
+    }
+
     /* Responsive Styles */
     @media (max-width: 768px) {
       .container {
@@ -652,6 +743,12 @@
 
       .filter-section > * {
         width: 100%;
+      }
+
+      .notification-container {
+        width: calc(100% - 40px);
+        right: 20px;
+        left: 20px;
       }
     }
   </style>
@@ -703,13 +800,33 @@
 
   <!-- Main App (hidden until authenticated) -->
   <div id="app-container" class="container hidden">
+    <!-- Notification Container -->
+    <div id="notification-container" class="notification-container">
+      <div class="notification-header">
+        <h3><i class="fas fa-bell"></i> Notifications</h3>
+        <button onclick="toggleNotifications()" class="secondary">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div id="notification-list">
+        <div class="empty-state">
+          <i class="fas fa-bell-slash"></i>
+          <h3>No notifications</h3>
+          <p>You're all caught up!</p>
+        </div>
+      </div>
+    </div>
+
     <div class="top-bar">
       <h1><i class="fas fa-user-circle"></i> Personal Management System</h1>
       <div>
         <button onclick="toggleTheme()" class="secondary" style="margin-right: 0.5rem;">
           <i class="fas fa-moon"></i> Theme
         </button>
-        <button onclick="logout()" class="danger">
+        <button id="notification-btn" onclick="toggleNotifications()" class="secondary notification-badge" data-count="0">
+          <i class="fas fa-bell"></i> Notifications
+        </button>
+        <button onclick="logout()" class="danger" style="margin-left: 0.5rem;">
           <i class="fas fa-sign-out-alt"></i> Logout
         </button>
       </div>
@@ -1116,10 +1233,11 @@
     const auth = firebase.auth();
 
     // Database references
-    let journalRef, financeRef, tasksRef, goalsRef, customCategoriesRef;
+    let journalRef, financeRef, tasksRef, goalsRef, customCategoriesRef, notificationsRef;
     let customCategories = [];
     let chartInstances = {};
     let encryptionKey = null;
+    let notificationCheckInterval;
 
     // Initialize the app
     document.addEventListener('DOMContentLoaded', function() {
@@ -1158,6 +1276,7 @@
         tasksRef = db.ref(`users/${user.uid}/tasks`);
         goalsRef = db.ref(`users/${user.uid}/goals`);
         customCategoriesRef = db.ref(`users/${user.uid}/customCategories`);
+        notificationsRef = db.ref(`users/${user.uid}/notifications`);
         
         // Load custom categories
         customCategoriesRef.on('value', (snapshot) => {
@@ -1174,12 +1293,21 @@
         loadFinanceEntries();
         renderTasks();
         loadGoals();
+        loadNotifications();
         updateDashboard();
+        
+        // Start checking for pending tasks/goals periodically
+        startNotificationCheck();
       } else {
         // User is signed out
         document.getElementById('auth-container').classList.remove('hidden');
         document.getElementById('app-container').classList.add('hidden');
         showView('login-view');
+        
+        // Clear any notification checks
+        if (notificationCheckInterval) {
+          clearInterval(notificationCheckInterval);
+        }
       }
     });
 
@@ -1207,17 +1335,220 @@
       tasksRef.on('value', () => {
         renderTasks();
         updateDashboard();
+        checkPendingTasks();
       });
       
       // Goals - using on() for real-time updates
       goalsRef.on('value', () => {
         loadGoals();
+        checkPendingGoals();
       });
       
       // Custom categories
       customCategoriesRef.on('value', () => {
         updateCategoryDropdowns();
       });
+      
+      // Notifications
+      notificationsRef.on('value', () => {
+        loadNotifications();
+      });
+    }
+
+    // Start checking for pending tasks/goals periodically
+    function startNotificationCheck() {
+      // Check immediately
+      checkPendingTasks();
+      checkPendingGoals();
+      
+      // Then check every hour
+      notificationCheckInterval = setInterval(() => {
+        checkPendingTasks();
+        checkPendingGoals();
+      }, 60 * 60 * 1000); // 1 hour
+    }
+
+    // Check for pending tasks and create notifications
+    function checkPendingTasks() {
+      const today = new Date().toISOString().split('T')[0];
+      
+      tasksRef.orderByChild('date').equalTo(today).once('value', snapshot => {
+        snapshot.forEach(child => {
+          const task = child.val();
+          if (!task.completed) {
+            // Check if notification already exists for this task
+            notificationsRef.orderByChild('taskId').equalTo(child.key).once('value', notifSnapshot => {
+              if (!notifSnapshot.exists()) {
+                // Create new notification
+                const notification = {
+                  type: 'task',
+                  taskId: child.key,
+                  title: 'Pending Task',
+                  message: `You have a pending task: "${task.text}"`,
+                  timestamp: Date.now(),
+                  read: false
+                };
+                notificationsRef.push(notification);
+              }
+            });
+          } else {
+            // Remove notification if task is completed
+            notificationsRef.orderByChild('taskId').equalTo(child.key).once('value', notifSnapshot => {
+              notifSnapshot.forEach(notif => {
+                notif.ref.remove();
+              });
+            });
+          }
+        });
+      });
+    }
+
+    // Check for pending goals and create notifications
+    function checkPendingGoals() {
+      const today = new Date().toISOString().split('T')[0];
+      const todayDate = new Date(today);
+      
+      goalsRef.once('value', snapshot => {
+        snapshot.forEach(child => {
+          const goal = child.val();
+          const endDate = new Date(goal.end);
+          
+          // Only notify if goal is due today or in the past and not completed
+          if (endDate <= todayDate && goal.current < goal.target) {
+            // Check if notification already exists for this goal
+            notificationsRef.orderByChild('goalId').equalTo(child.key).once('value', notifSnapshot => {
+              if (!notifSnapshot.exists()) {
+                // Create new notification
+                const notification = {
+                  type: 'goal',
+                  goalId: child.key,
+                  title: 'Pending Goal',
+                  message: `Your goal "${goal.name}" is due! Progress: ${goal.current}/${goal.target} ${goal.unit}`,
+                  timestamp: Date.now(),
+                  read: false
+                };
+                notificationsRef.push(notification);
+              }
+            });
+          } else {
+            // Remove notification if goal is completed or not yet due
+            notificationsRef.orderByChild('goalId').equalTo(child.key).once('value', notifSnapshot => {
+              notifSnapshot.forEach(notif => {
+                notif.ref.remove();
+              });
+            });
+          }
+        });
+      });
+    }
+
+    // Load and display notifications
+    function loadNotifications() {
+      notificationsRef.orderByChild('timestamp').once('value', snapshot => {
+        const container = document.getElementById('notification-list');
+        const data = snapshot.val();
+        
+        if (!data) {
+          container.innerHTML = `
+            <div class="empty-state">
+              <i class="fas fa-bell-slash"></i>
+              <h3>No notifications</h3>
+              <p>You're all caught up!</p>
+            </div>
+          `;
+          document.getElementById('notification-btn').setAttribute('data-count', '0');
+          return;
+        }
+        
+        // Convert to array and sort by timestamp (newest first)
+        const notifications = Object.entries(data).map(([key, value]) => ({
+          id: key,
+          ...value
+        })).sort((a, b) => b.timestamp - a.timestamp);
+        
+        // Count unread notifications
+        const unreadCount = notifications.filter(n => !n.read).length;
+        document.getElementById('notification-btn').setAttribute('data-count', unreadCount);
+        
+        // Display notifications
+        container.innerHTML = '';
+        notifications.forEach(notification => {
+          const div = document.createElement('div');
+          div.className = `notification-item ${notification.read ? '' : 'unread'}`;
+          div.onclick = () => markNotificationAsRead(notification.id);
+          
+          let iconClass = 'fas fa-info-circle';
+          let itemClass = '';
+          
+          if (notification.type === 'task') {
+            iconClass = 'fas fa-tasks';
+            itemClass = 'notification-item-task';
+          } else if (notification.type === 'goal') {
+            iconClass = 'fas fa-bullseye';
+            itemClass = 'notification-item-goal';
+          }
+          
+          div.innerHTML = `
+            <div class="notification-item-title">
+              <span><i class="${iconClass} ${itemClass}"></i> ${notification.title}</span>
+              <button onclick="deleteNotification('${notification.id}'); event.stopPropagation();" class="danger" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">
+                <i class="fas fa-trash"></i>
+              </button>
+            </div>
+            <div class="notification-item-content">${notification.message}</div>
+            <div class="notification-item-time">${formatTime(notification.timestamp)}</div>
+          `;
+          container.appendChild(div);
+        });
+      });
+    }
+
+    // Mark notification as read
+    function markNotificationAsRead(id) {
+      notificationsRef.child(id).update({ read: true });
+    }
+
+    // Delete notification
+    function deleteNotification(id) {
+      if (confirm("Are you sure you want to delete this notification?")) {
+        notificationsRef.child(id).remove();
+      }
+    }
+
+    // Format timestamp for display
+    function formatTime(timestamp) {
+      const now = new Date();
+      const date = new Date(timestamp);
+      const diffInHours = Math.floor((now - date) / (1000 * 60 * 60));
+      
+      if (diffInHours < 1) {
+        return 'Just now';
+      } else if (diffInHours < 24) {
+        return `${diffInHours} hour${diffInHours > 1 ? 's' : ''} ago`;
+      } else {
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+      }
+    }
+
+    // Toggle notifications visibility
+    function toggleNotifications() {
+      const container = document.getElementById('notification-container');
+      container.classList.toggle('show');
+      
+      // Mark all notifications as read when opened
+      if (container.classList.contains('show')) {
+        notificationsRef.once('value', snapshot => {
+          const updates = {};
+          snapshot.forEach(child => {
+            if (!child.val().read) {
+              updates[child.key + '/read'] = true;
+            }
+          });
+          if (Object.keys(updates).length > 0) {
+            notificationsRef.update(updates);
+          }
+        });
+      }
     }
 
     // Update all category dropdowns with custom categories
@@ -1361,6 +1692,9 @@
       if (tabName === 'analytics') {
         updateAnalyticsCharts();
       }
+      
+      // Hide notifications when switching tabs
+      document.getElementById('notification-container').classList.remove('show');
     }
 
     // Theme Management
@@ -1980,7 +2314,16 @@
     }
 
     window.toggleComplete = (key, completed) => {
-      db.ref(`users/${auth.currentUser.uid}/tasks/${key}`).update({ completed });
+      db.ref(`users/${auth.currentUser.uid}/tasks/${key}`).update({ completed }, () => {
+        if (completed) {
+          // Remove notification when task is marked as complete
+          notificationsRef.orderByChild('taskId').equalTo(key).once('value', snapshot => {
+            snapshot.forEach(notif => {
+              notif.ref.remove();
+            });
+          });
+        }
+      });
     };
 
     window.removeTask = (key) => {
@@ -2079,7 +2422,21 @@
     }
 
     window.updateGoalProgress = (key, newValue) => {
-      goalsRef.child(key).update({ current: newValue });
+      goalsRef.child(key).once('value', snapshot => {
+        const goal = snapshot.val();
+        const target = goal.target;
+        
+        goalsRef.child(key).update({ current: newValue }, () => {
+          // If goal is completed (current >= target), remove notification
+          if (newValue >= target) {
+            notificationsRef.orderByChild('goalId').equalTo(key).once('value', notifSnapshot => {
+              notifSnapshot.forEach(notif => {
+                notif.ref.remove();
+              });
+            });
+          }
+        });
+      });
     };
 
     function deleteGoal(key) {
@@ -2282,6 +2639,8 @@
     window.addGoal = addGoal;
     window.updateGoalProgress = updateGoalProgress;
     window.deleteGoal = deleteGoal;
+    window.toggleNotifications = toggleNotifications;
+    window.deleteNotification = deleteNotification;
   </script>
 </body>
 </html>
